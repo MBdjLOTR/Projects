@@ -1,0 +1,126 @@
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+
+# Set working directory or specify the path to your data files
+# setwd("your/directory/path")
+
+# Read the datasets
+ratings <- read.csv("rating.csv")
+anime <- read.csv("anime.csv")
+
+# Data Cleaning
+# Convert ratings to binary: if rating > 0, then watched (1), else not watched (0)
+ratings_binary <- ratings %>%
+  mutate(watched = ifelse(rating > 0, 1, 0)) %>%
+  select(user_id, anime_id, watched)
+
+# Remove duplicates
+ratings_binary <- ratings_binary %>%
+  distinct(user_id, anime_id, .keep_all = TRUE)
+
+# Create the User-Item Matrix
+# Pivot the data to create a matrix with users as rows and anime as columns
+user_item_matrix <- ratings_binary %>%
+  pivot_wider(names_from = anime_id, values_from = watched, values_fill = list(watched = 0))
+
+# Extract the user IDs for reference
+user_ids <- user_item_matrix$user_id
+
+# Convert to a matrix and remove the user_id column
+user_item_matrix <- as.matrix(user_item_matrix[,-1])
+colnames(user_item_matrix) <- paste0("Anime_", colnames(user_item_matrix))
+
+# Calculating the Jaccard Similarity Matrix
+# Function to calculate Jaccard similarity between two binary vectors
+jaccard_similarity <- function(x, y) {
+  intersection <- sum(x & y)
+  union <- sum(x | y)
+  if (union == 0) {
+    return(0)
+  } else {
+    return(intersection / union)
+  }
+}
+
+# Calculate the similarity matrix
+num_users <- nrow(user_item_matrix)
+similarity_matrix <- matrix(0, nrow = num_users, ncol = num_users)
+
+for (i in 1:num_users) {
+  for (j in i:num_users) {  # Utilize symmetry to reduce computation
+    sim <- jaccard_similarity(user_item_matrix[i, ], user_item_matrix[j, ])
+    similarity_matrix[i, j] <- sim
+    similarity_matrix[j, i] <- sim
+  }
+}
+
+colnames(similarity_matrix) <- user_ids
+rownames(similarity_matrix) <- user_ids
+
+# Making Recommendations
+# Function to generate recommendations for a target user
+generate_recommendations <- function(target_user_id, top_n = 5, num_recommendations = 5) {
+  # Find the index of the target user
+  target_index <- which(user_ids == target_user_id)
+  
+  # Get the similarity scores for the target user
+  similar_users <- similarity_matrix[target_index, ]
+  similar_users[target_index] <- 0  # Exclude the target user
+  
+  # Get indices of top N similar users
+  top_users_indices <- order(similar_users, decreasing = TRUE)[1:top_n]
+  
+  # Get the anime watched by the target user
+  target_user_anime <- user_item_matrix[target_index, ]
+  
+  # Get the anime watched by similar users
+  similar_users_anime <- user_item_matrix[top_users_indices, ]
+  
+  # Sum the anime watched by similar users
+  anime_scores <- colSums(similar_users_anime)
+  
+  # Exclude anime already watched by the target user
+  anime_scores[target_user_anime == 1] <- 0
+  
+  # Get the indices of the top recommended anime
+  recommended_indices <- order(anime_scores, decreasing = TRUE)[1:num_recommendations]
+  
+  # Get the corresponding anime IDs
+  recommended_anime_ids <- as.numeric(sub("Anime_", "", names(anime_scores)[recommended_indices]))
+  
+  # Retrieve the anime details
+  recommended_anime <- anime %>%
+    filter(anime_id %in% recommended_anime_ids) %>%
+    select(anime_id, name, genre, type, episodes, rating, members)
+  
+  # Display the recommendations
+  print(paste("Recommendations for User ID:", target_user_id))
+  print(recommended_anime)
+}
+
+# Example usage:
+# Generate recommendations for a specific user (e.g., user_id = 10)
+generate_recommendations(target_user_id = 10, top_n = 5, num_recommendations = 5)
+
+# Visualizing User Similarities
+# Convert the similarity matrix to a data frame suitable for ggplot
+sim_df <- melt(similarity_matrix)
+colnames(sim_df) <- c("User1", "User2", "Similarity")
+
+# Sample a subset of users for visualization if the dataset is large
+set.seed(123)
+sample_users <- sample(user_ids, 50)  # Adjust the number as needed
+
+sim_df_subset <- sim_df %>%
+  filter(User1 %in% sample_users & User2 %in% sample_users)
+
+# Plot the heatmap
+ggplot(data = sim_df_subset, aes(x = User1, y = User2, fill = Similarity)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title = "User Similarity Heatmap", x = "User ID", y = "User ID")
